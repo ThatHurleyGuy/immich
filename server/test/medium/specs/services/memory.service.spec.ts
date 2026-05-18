@@ -423,5 +423,112 @@ describe(MemoryService.name, () => {
       const { sut } = setup();
       await expect(sut.onMemoriesCleanup()).resolves.not.toThrow();
     });
+
+    it('should remove partner assets from memories when partner sharing is revoked', async () => {
+      const { sut, ctx } = setup();
+      const assetRepo = ctx.get(AssetRepository);
+      const memoryRepo = ctx.get(MemoryRepository);
+      const partnerRepo = ctx.get(PartnerRepository);
+      const now = DateTime.fromObject({ year: 2025, month: 6, day: 15 }, { zone: 'utc' }) as DateTime<true>;
+      const { user: user1 } = await ctx.newUser();
+      const { user: user2 } = await ctx.newUser();
+
+      // Asset owned by partner (user2), taken 1 year ago
+      const { asset: partnerAsset } = await ctx.newAsset({
+        ownerId: user2.id,
+        localDateTime: now.minus({ years: 1 }).toISO(),
+      });
+      await Promise.all([
+        ctx.newExif({ assetId: partnerAsset.id, make: 'Canon' }),
+        ctx.newJobStatus({ assetId: partnerAsset.id }),
+        assetRepo.upsertFiles([
+          { assetId: partnerAsset.id, type: AssetFileType.Preview, path: '/path/to/preview.jpg' },
+          { assetId: partnerAsset.id, type: AssetFileType.Thumbnail, path: '/path/to/thumbnail.jpg' },
+        ]),
+      ]);
+
+      // user2 shares timeline with user1
+      await ctx.newPartner({ sharedById: user2.id, sharedWithId: user1.id, inTimeline: true });
+
+      vi.setSystemTime(now.toJSDate());
+      await sut.onMemoriesCreate();
+
+      // Verify partner asset is in user1's memory
+      let memories = await memoryRepo.search(user1.id, {});
+      expect(memories.length).toBe(1);
+      expect(memories[0].assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: partnerAsset.id })]));
+
+      // Revoke partner sharing
+      await partnerRepo.remove({ sharedById: user2.id, sharedWithId: user1.id });
+
+      // Cleanup should remove the partner asset from the memory
+      await sut.onMemoriesCleanup();
+
+      memories = await memoryRepo.search(user1.id, {});
+      expect(memories.length).toBe(1);
+      expect(memories[0].assets).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: partnerAsset.id })]),
+      );
+    });
+  });
+
+  describe('onMemoryCreate (partner sharing)', () => {
+    const makeAssetSetup = async (
+      ctx: ReturnType<typeof setup>['ctx'],
+      assetRepo: AssetRepository,
+      ownerId: string,
+      date: DateTime,
+    ) => {
+      const { asset } = await ctx.newAsset({ ownerId, localDateTime: date.toISO()! });
+      await Promise.all([
+        ctx.newExif({ assetId: asset.id, make: 'Canon' }),
+        ctx.newJobStatus({ assetId: asset.id }),
+        assetRepo.upsertFiles([
+          { assetId: asset.id, type: AssetFileType.Preview, path: '/path/to/preview.jpg' },
+          { assetId: asset.id, type: AssetFileType.Thumbnail, path: '/path/to/thumbnail.jpg' },
+        ]),
+      ]);
+      return asset;
+    };
+
+    it('should include partner assets in memories when partner shares timeline', async () => {
+      const { sut, ctx } = setup();
+      const assetRepo = ctx.get(AssetRepository);
+      const memoryRepo = ctx.get(MemoryRepository);
+      const now = DateTime.fromObject({ year: 2025, month: 4, day: 10 }, { zone: 'utc' }) as DateTime<true>;
+      const { user: user1 } = await ctx.newUser();
+      const { user: user2 } = await ctx.newUser();
+
+      await makeAssetSetup(ctx, assetRepo, user2.id, now.minus({ years: 1 }));
+      const partnerAsset = await makeAssetSetup(ctx, assetRepo, user2.id, now.minus({ years: 1 }));
+
+      await ctx.newPartner({ sharedById: user2.id, sharedWithId: user1.id, inTimeline: true });
+
+      vi.setSystemTime(now.toJSDate());
+      await sut.onMemoriesCreate();
+
+      const memories = await memoryRepo.search(user1.id, {});
+      expect(memories.length).toBe(1);
+      expect(memories[0].assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: partnerAsset.id })]));
+    });
+
+    it('should not include partner assets when partner has inTimeline=false', async () => {
+      const { sut, ctx } = setup();
+      const assetRepo = ctx.get(AssetRepository);
+      const memoryRepo = ctx.get(MemoryRepository);
+      const now = DateTime.fromObject({ year: 2025, month: 5, day: 20 }, { zone: 'utc' }) as DateTime<true>;
+      const { user: user1 } = await ctx.newUser();
+      const { user: user2 } = await ctx.newUser();
+
+      await makeAssetSetup(ctx, assetRepo, user2.id, now.minus({ years: 1 }));
+
+      await ctx.newPartner({ sharedById: user2.id, sharedWithId: user1.id, inTimeline: false });
+
+      vi.setSystemTime(now.toJSDate());
+      await sut.onMemoriesCreate();
+
+      const memories = await memoryRepo.search(user1.id, {});
+      expect(memories.length).toBe(0);
+    });
   });
 });

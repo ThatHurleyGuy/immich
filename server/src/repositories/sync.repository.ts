@@ -588,6 +588,21 @@ class MemoryToAssetSync extends BaseSync {
       .select(['memoriesId as memoryId', 'assetId as assetId'])
       .select('updateId')
       .where('memoriesId', 'in', (eb) => eb.selectFrom('memory').select('id').where('ownerId', '=', options.userId))
+      .where((eb) =>
+        eb.or([
+          // Asset owned by the user
+          eb('assetId', 'in', (eb2) => eb2.selectFrom('asset').select('id').where('ownerId', '=', options.userId)),
+          // Asset owned by an active timeline partner
+          eb('assetId', 'in', (eb2) =>
+            eb2
+              .selectFrom('asset')
+              .select('asset.id')
+              .innerJoin('partner', 'partner.sharedById', 'asset.ownerId')
+              .where('partner.sharedWithId', '=', options.userId)
+              .where('partner.inTimeline', '=', true),
+          ),
+        ]),
+      )
       .stream();
   }
 }

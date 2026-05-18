@@ -66,6 +66,53 @@ describe(SyncEntityType.MemoryToAssetV1, () => {
     await ctx.assertSyncIsComplete(auth, [SyncRequestType.MemoryToAssetsV1]);
   });
 
+  it('should sync a memory containing a partner asset when partner sharing is active', async () => {
+    const { auth, user, ctx } = await setup();
+    const { auth: auth2, user: user2 } = await ctx.newSyncAuthUser();
+    const { asset: partnerAsset } = await ctx.newAsset({ ownerId: user2.id });
+    const { memory } = await ctx.newMemory({ ownerId: user.id });
+    await ctx.newMemoryAsset({ memoryId: memory.id, assetId: partnerAsset.id });
+    await ctx.newPartner({ sharedById: user2.id, sharedWithId: user.id, inTimeline: true });
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.MemoryToAssetsV1]);
+    expect(response).toEqual([
+      {
+        ack: expect.any(String),
+        data: { memoryId: memory.id, assetId: partnerAsset.id },
+        type: 'MemoryToAssetV1',
+      },
+      expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 }),
+    ]);
+
+    // partner's own sync should not include user1's memory
+    await ctx.assertSyncIsComplete(auth2, [SyncRequestType.MemoryToAssetsV1]);
+  });
+
+  it('should not sync a memory containing a partner asset when partner sharing is inactive', async () => {
+    const { auth, user, ctx } = await setup();
+    const { user: user2 } = await ctx.newSyncAuthUser();
+    const { asset: partnerAsset } = await ctx.newAsset({ ownerId: user2.id });
+    const { memory } = await ctx.newMemory({ ownerId: user.id });
+    await ctx.newMemoryAsset({ memoryId: memory.id, assetId: partnerAsset.id });
+    // partner exists but inTimeline is false
+    await ctx.newPartner({ sharedById: user2.id, sharedWithId: user.id, inTimeline: false });
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.MemoryToAssetsV1]);
+    expect(response).toEqual([expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 })]);
+  });
+
+  it('should not sync a memory containing an asset from a non-partner', async () => {
+    const { auth, user, ctx } = await setup();
+    const { user: user2 } = await ctx.newSyncAuthUser();
+    const { asset: otherAsset } = await ctx.newAsset({ ownerId: user2.id });
+    const { memory } = await ctx.newMemory({ ownerId: user.id });
+    await ctx.newMemoryAsset({ memoryId: memory.id, assetId: otherAsset.id });
+    // no partner relationship
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.MemoryToAssetsV1]);
+    expect(response).toEqual([expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 })]);
+  });
+
   it('should not sync a memory to asset relation or delete for an unrelated user', async () => {
     const { auth, ctx } = await setup();
     const memoryRepo = ctx.get(MemoryRepository);

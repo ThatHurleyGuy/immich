@@ -7,7 +7,7 @@ import { AuthDto } from 'src/dtos/auth.dto';
 import { MemoryCreateDto, MemoryResponseDto, MemorySearchDto, MemoryUpdateDto, mapMemory } from 'src/dtos/memory.dto';
 import { DatabaseLock, JobName, MemoryType, Permission, QueueName, SystemMetadataKey } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
-import { addAssets, removeAssets } from 'src/utils/asset.util';
+import { addAssets, getMyPartnerIds, removeAssets } from 'src/utils/asset.util';
 import { findOrFail } from 'src/utils/misc';
 
 const DAYS = 3;
@@ -48,21 +48,28 @@ export class MemoryService extends BaseService {
   private async createOnThisDayMemories(ownerId: string, target: DateTime) {
     const showAt = target.startOf('day').toISO();
     const hideAt = target.endOf('day').toISO();
-    const memories = await this.assetRepository.getByDayOfYear([ownerId], target);
+    const partnerIds = await getMyPartnerIds({
+      userId: ownerId,
+      repository: this.partnerRepository,
+      timelineEnabled: true,
+    });
+    const memories = await this.assetRepository.getByDayOfYear([ownerId, ...partnerIds], target);
     await Promise.all(
-      memories.map(({ year, assets }) =>
-        this.memoryRepository.create(
-          {
-            ownerId,
-            type: MemoryType.OnThisDay,
-            data: { year },
-            memoryAt: target.set({ year }).toISO()!,
-            showAt,
-            hideAt,
-          },
-          new Set(assets.map(({ id }) => id)),
-        ),
-      ),
+      memories.map(async ({ year, assets }) => {
+        const memoryAt = target.set({ year }).toISO()!;
+        const existing = await this.memoryRepository.findByTypeAndMemoryAt(ownerId, MemoryType.OnThisDay, memoryAt);
+        if (existing) {
+          await this.memoryRepository.addAssetIds(
+            existing.id,
+            assets.map(({ id }) => id),
+          );
+        } else {
+          await this.memoryRepository.create(
+            { ownerId, type: MemoryType.OnThisDay, data: { year }, memoryAt, showAt, hideAt },
+            new Set(assets.map(({ id }) => id)),
+          );
+        }
+      }),
     );
   }
 

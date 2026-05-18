@@ -5,7 +5,7 @@ import { DateTime } from 'luxon';
 import { InjectKysely } from 'nestjs-kysely';
 import { Chunked, ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { MemorySearchDto } from 'src/dtos/memory.dto';
-import { AssetOrderWithRandom, AssetVisibility } from 'src/enum';
+import { AssetOrderWithRandom, AssetVisibility, MemoryType } from 'src/enum';
 import { DB } from 'src/schema';
 import { MemoryTable } from 'src/schema/tables/memory.table';
 import { IBulkAsset } from 'src/types';
@@ -15,11 +15,34 @@ export class MemoryRepository implements IBulkAsset {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
 
   async cleanup() {
+    // Remove assets that are no longer visible on the timeline (trashed, hidden, etc.)
     await this.db
       .deleteFrom('memory_asset')
       .using('asset')
       .whereRef('memory_asset.assetId', '=', 'asset.id')
       .where('asset.visibility', '!=', AssetVisibility.Timeline)
+      .execute();
+
+    // Remove partner assets from memories when the partner sharing has been revoked
+    await this.db
+      .deleteFrom('memory_asset')
+      .using('asset')
+      .using('memory')
+      .whereRef('memory_asset.assetId', '=', 'asset.id')
+      .whereRef('memory_asset.memoriesId', '=', 'memory.id')
+      .whereRef('asset.ownerId', '<>', 'memory.ownerId')
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom('partner')
+              .select(sql.lit(1).as('_'))
+              .whereRef('partner.sharedWithId', '=', 'memory.ownerId')
+              .whereRef('partner.sharedById', '=', 'asset.ownerId')
+              .where('partner.inTimeline', '=', true),
+          ),
+        ),
+      )
       .execute();
 
     return this.db
@@ -117,6 +140,18 @@ export class MemoryRepository implements IBulkAsset {
     return this.getByIdBuilder(id).executeTakeFirst();
   }
 
+  @GenerateSql({ params: [DummyValue.UUID, MemoryType.OnThisDay, DummyValue.DATE] })
+  findByTypeAndMemoryAt(ownerId: string, type: MemoryType, memoryAt: string) {
+    return this.db
+      .selectFrom('memory')
+      .select('id')
+      .where('ownerId', '=', ownerId)
+      .where('type', '=', type)
+      .where('memoryAt', '=', new Date(memoryAt))
+      .where('deletedAt', 'is', null)
+      .executeTakeFirst();
+  }
+
   async create(memory: Insertable<MemoryTable>, assetIds: Set<string>) {
     const id = await this.db.transaction().execute(async (tx) => {
       const { id } = await tx.insertInto('memory').values(memory).returning('id').executeTakeFirstOrThrow();
@@ -169,6 +204,7 @@ export class MemoryRepository implements IBulkAsset {
     await this.db
       .insertInto('memory_asset')
       .values(assetIds.map((assetId) => ({ memoriesId: id, assetId })))
+      .onConflict((oc) => oc.doNothing())
       .execute();
   }
 

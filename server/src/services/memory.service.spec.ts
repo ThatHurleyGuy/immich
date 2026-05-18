@@ -3,7 +3,9 @@ import { MemoryService } from 'src/services/memory.service';
 import { OnThisDayData } from 'src/types';
 import { AssetFactory } from 'test/factories/asset.factory';
 import { MemoryFactory } from 'test/factories/memory.factory';
-import { getForMemory } from 'test/mappers';
+import { PartnerFactory } from 'test/factories/partner.factory';
+import { UserFactory } from 'test/factories/user.factory';
+import { getForMemory, getForPartner } from 'test/mappers';
 import { factory, newUuid, newUuids } from 'test/small.factory';
 import { newTestService, ServiceMocks } from 'test/utils';
 
@@ -17,6 +19,39 @@ describe(MemoryService.name, () => {
 
   it('should be defined', () => {
     expect(sut).toBeDefined();
+  });
+
+  describe('onMemoriesCreate', () => {
+    it('should include partner assets when partner shares timeline', async () => {
+      const owner = UserFactory.create();
+      const partner = PartnerFactory.from({ sharedWithId: owner.id, inTimeline: true }).build();
+
+      mocks.user.getList.mockResolvedValue([owner]);
+      mocks.systemMetadata.get.mockResolvedValue(null);
+      mocks.partner.getAll.mockResolvedValue([getForPartner(partner)]);
+      mocks.asset.getByDayOfYear.mockResolvedValue([]);
+
+      await sut.onMemoriesCreate();
+
+      expect(mocks.asset.getByDayOfYear).toHaveBeenCalledWith(
+        expect.arrayContaining([owner.id, partner.sharedById]),
+        expect.anything(),
+      );
+    });
+
+    it('should not include partner assets when partner has inTimeline=false', async () => {
+      const owner = UserFactory.create();
+      const partner = PartnerFactory.from({ sharedWithId: owner.id, inTimeline: false }).build();
+
+      mocks.user.getList.mockResolvedValue([owner]);
+      mocks.systemMetadata.get.mockResolvedValue(null);
+      mocks.partner.getAll.mockResolvedValue([getForPartner(partner)]);
+      mocks.asset.getByDayOfYear.mockResolvedValue([]);
+
+      await sut.onMemoriesCreate();
+
+      expect(mocks.asset.getByDayOfYear).toHaveBeenCalledWith([owner.id], expect.anything());
+    });
   });
 
   describe('onMemoryCleanup', () => {
